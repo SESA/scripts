@@ -42,21 +42,6 @@ declare -r KHTTYMAJOR=${KHCTL_TTYMAJOR:-230}
 declare -r KHXIPFILE=${KHCTL_XIPFILE:-/proc/device-tree/u-boot-env/xip}
 declare -r KHNATIPFILE=${KHCTL_NATFILE:-/proc/device-tree/u-boot-env/natip}
 
-# SESA General
-declare -r SESAMAXNODES=${SESA_MAX_NODES:-64}
-declare -r SESANETDIR=${SESA_NETDIR:-$KHBASEDIR/Switches}
-declare -r SESASOCKDIR=${SESA_NETDIR:-$KHBASEDIR/Sockets}
-declare -r SESAUTLBASECMD=${SESA_UTL_BASECMD-"qemu-system-x86_64"}
-
-# SESA Networks
-declare -r SESAMACPREFIX=${SESA_MAX_PREFIX:-00:00:00:00:0}
-declare -r SESAEXNETID=${SESA_EXNET_ID:-EX}
-declare -r SESAEXNETMOD=${SESA_EXNET_MOD:-660}
-declare -r SESAINNETID=${SESA_INNET_ID:-IN}
-declare -r SESAINNETMOD=${SESA_INNET_MOD:-660}
-declare -r SESAPVNETMOD=${SESA_PVNET_MOD:-600}
-
-
 declare -r FREEOWNER='_FREE_'
 declare -r FREEPNET=$KHFREENETID
 declare -r FREEINETFLG=0
@@ -67,6 +52,21 @@ declare BUFFERVAR
 declare -i BUFFERTTY=1
 
 typeset dofunc
+
+# SESA General
+declare -r SESAMAXNODES=${SESA_MAX_NODES:-64}
+declare -r SESANETDIR=${SESA_NETDIR:-$KHBASEDIR/Networks}
+declare -r SESAIODIR=${SESA_IODIR:-$KHBASEDIR/Ports}
+declare -r SESAEMUCMD=${SESA_EMUCMD-"qemu-system-x86_64"}
+
+# SESA Networking
+declare -r SESAMACPREFIX=${SESA_MAX_PREFIX:-00:00:00:00:0}
+declare -r SESAEXNETID=${SESA_EXNET_ID:-EX}
+declare -r SESAINNETID=${SESA_INNET_ID:-IN}
+declare -r SESAEXNETMOD=${SESA_EXNET_MOD:-660}
+declare -r SESAINNETMOD=${SESA_INNET_MOD:-660}
+declare -r SESAPVNETMOD=${SESA_PVNET_MOD:-600}
+
 
 function getNatIP
 {
@@ -395,14 +395,28 @@ configNodes()
 }
    
 
-SESAconstructNet()
+SESAcreateNet()
 {
   local pid=$1
   local mod=$2 
+  local dir=$SESANETDIR/$pid
   #TODO tap=
+
+  if [[ -d $dir ]]
+  then
+      echo "ERROR: $dir already exists?!?" >&2
+      return 255
+  fi
+  
   #echo "vde_switch -d -s $SESANETDIR/$pid/sock -M $SESANETDIR/$pid/mgmt -mod $mod &"
-  mkdir $SESANETDIR/$pid
-  vde_switch -daemon -sock=$SESANETDIR/$pid/sock -M $SESANETDIR/$pid/mgmt -mod $mod &
+  vde_switch -daemon -sock=$dir/sock -M $dir/mgmt -mod $mod &
+}
+
+SESACreatePort()
+{
+  local pid=$1
+  local node=$2 
+  local dir=$SESANETDIR/$pid
 
 }
 
@@ -428,7 +442,6 @@ SESAconfigNodes()
   local -i ethoffset
   local inetdesc
   local tmp
-  local basecmd=$SESAUTLBASECMD
   local netcmd=""
   local srlcmd=""
   local concmd=""
@@ -442,7 +455,7 @@ SESAconfigNodes()
   then
     if [[ ! -a $SESANETDIR/$SESAEXNETID/sock ]]
     then
-      SESAconstructNet $SESAEXNETID $SESAEXNETMOD
+      SESAcreateNet $SESAEXNETID $SESAEXNETMOD
     fi
     (( ethoffset++ ))
   fi
@@ -450,7 +463,7 @@ SESAconfigNodes()
   then
     if [[ ! -a $SESANETDIR/$SESAINNETID/sock ]]
     then
-      SESAconstructNet $SESAINNETID $SESAINNETMOD
+      SESAcreateNet $SESAINNETID $SESAINNETMOD
     fi
     (( ethoffset++ ))
   fi
@@ -462,7 +475,7 @@ SESAconfigNodes()
     # TODO: check permissions
     if [[ ! -a $SESANETDIR/$p/sock ]]
     then
-      SESAconstructNet $p $SESAPVNETMOD
+      SESAcreateNet $p $SESAPVNETMOD
     fi
   done
 
@@ -470,13 +483,6 @@ SESAconfigNodes()
   for n in $nodes; do
     netcmd=""
     j=$ethoffset
-    for p in ${pnetids//,/ }; do
-      echo  "node $n: -net nic,vlan=$p,model=virtio,macaddr=$SESAMACPREFIX:$n -net vde,vlan=$p,sock=$SESANETDIR/${p}/sock"
-      #TODO unique macaddr
-      netcmd="$netcmd -net nic,vlan=$p,model=virtio,macaddr=$SESAMACPREFIX:$n -net vde,vlan=$p,sock=$SESANETDIR/${p}/sock"
-      echo "node $n: network $p : eth${j}"
-      (( j++ ))
-    done
     # internal network
     if (( $inet == 1 ))
     then
@@ -494,6 +500,14 @@ SESAconfigNodes()
       netcmd="$netcmd -net nic,vlan=1,macaddr=$SESAMACPREFIX:$n -net bridge,vlan=1,br=brX"
       echo "node $n: network External : eth0"
     fi
+    # private network(s)
+    for p in ${pnetids//,/ }; do
+      echo  "node $n: -net nic,vlan=$p,model=virtio,macaddr=$SESAMACPREFIX:$n -net vde,vlan=$p,sock=$SESANETDIR/${p}/sock"
+      #TODO unique macaddr
+      netcmd="$netcmd -net nic,vlan=$p,model=virtio,macaddr=$SESAMACPREFIX:$n -net vde,vlan=$p,sock=$SESANETDIR/${p}/sock"
+      echo "node $n: network $p : eth${j}"
+      (( j++ ))
+    done
 
     # serial
     echo "node $n: serial : "
@@ -501,65 +515,11 @@ SESAconfigNodes()
 
     # vde 
     echo "node $n: console : "
+    concom="--vde localhost:222"
 
-    # instantiate!
-    $basecmd $netcmd $srlcmd $concmd $IMG &
+    # instantiate node!
+    $SESA_EMUCMD $netcmd $srlcmd $concom $SESA_RUNTIME &
   done
-
-
-
-
-
-#  j=2
-#  tmp=( ${pnetids//,/ } )
-#  i=${#tmp[@]}
-#  (( i-- ))
-#  while (( $i >= 0 ))
-#  do
-#   for n in $nodes; do
-#     p=${tmp[$i]}
-#     echo  "node $n: -net nic,vlan=$p,model=virtio,macaddr=$SESAMACPREFIX:$n -net vde,vlan=$p,sock=PNETDIR/pnet${p}/sock"
-#     nodecmd+="-net nic,vlan=$p,model=virtio,macaddr=$SESAMACPREFIX:$n -net vde,vlan=$p,sock=PNETDIR/pnet${p}/sock"
-#     
-#   done
-#   (( j++ ))
-#   (( i-- ))
-#  done  
-#
-#  if (( $inet == 1 ))
-#  then
-#    for n in $nodes; do
-#      echo  "node $n: -net nic,vlan=2,macaddr=$SESAMACPREFIX:$n -net bridge,vlan=2,br=brI"
-#      if (( $ethoffset == 1 ))
-#      then
-#        inetdesc="node $n: network Internal : eth0"
-#      else
-#        inetdesc="node $n: network Internal : eth1"
-#      fi
-#   done
-#  fi
-#    
-#  if (( $xnet == 1 ))
-#  then
-#    for n in $nodes; do
-#      echo  "node $n: -net nic,vlan=1,macaddr=$SESAMACPREFIX:$n -net bridge,vlan=1,br=brX"
-#      echo "node $n: network External : eth0"
-#    done
-#  fi
-#
-#  if (( $inet == 1 ))
-#  then
-#     echo "$inetdesc"
-#  fi
-#
-#  j=$ethoffset
-#  for p in ${pnetids//,/ }
-#  do
-#    for n in $nodes; do
-#       echo "node $n: network $p : eth${j}"
-#    done
-#    (( j++ ))
-#  done
 
   return 0
 }
