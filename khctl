@@ -44,9 +44,9 @@ declare -r KHNATIPFILE=${KHCTL_NATFILE:-/proc/device-tree/u-boot-env/natip}
 
 # SESA General
 declare -r SESAMAXNODES=${SESA_MAX_NODES:-64}
-declare -r SESANETDIR=${SESA_NETDIR:-$KHBASEDIR/Switches}
-declare -r SESASOCKDIR=${SESA_NETDIR:-$KHBASEDIR/Sockets}
-declare -r SESAUTLBASECMD=${SESA_UTL_BASECMD-"qemu-system-x86_64"}
+declare -r SESANETDIR=${SESA_NETDIR:-$KHBASEDIR/Networks}
+declare -r SESAIODIR=${SESA_IODIR:-$KHBASEDIR/Ports}
+declare -r SESAEMUCOM=${SESA_EMUCOM-"qemu-system-x86_64"}
 
 # SESA Networks
 declare -r SESAMACPREFIX=${SESA_MAX_PREFIX:-00:00:00:00:0}
@@ -428,7 +428,6 @@ SESAconfigNodes()
   local -i ethoffset
   local inetdesc
   local tmp
-  local basecmd=$SESAUTLBASECMD
   local netcmd=""
   local srlcmd=""
   local concmd=""
@@ -501,9 +500,10 @@ SESAconfigNodes()
 
     # vde 
     echo "node $n: console : "
+    concom="--vde localhost:222"
 
     # instantiate!
-    $basecmd $netcmd $srlcmd $concmd $IMG &
+    $SESA_EMUCOM $netcmd $srlcmd $concom $SESA_RUNTIME &
   done
 
 
