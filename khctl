@@ -26,7 +26,7 @@ declare -r KHCONIDSTART=${KHCTL_CONIDSTART:-2}
 declare -r KHCONIDEND=${KHCTL_CONIDEND:-$(printf "%d" 0xffffffff)}
 declare -r KHPNETIDFILE=${KHCTL_PNETIDFILE:-$KHCTLDIR/PNetID}
 declare -r KHINETID=${KHCTL_INETID:-0}
-declare -r KHXNETID=${KHCTL_XNETID:-1}
+declare -r KHXNETID=${KHCTL_XNETID:255}
 declare -r KHFREENETID=${KHCTL_FREENETID:-2}
 declare -r KHPNETSRESERVED=${KHCTL_PNETSRESERVED:-3}
 declare -r KHPNETIDSTART=${KHCTL_PNETIDSTART:-$KHPNETSRESERVED}
@@ -52,6 +52,21 @@ declare BUFFERVAR
 declare -i BUFFERTTY=1
 
 typeset dofunc
+
+# SESA General
+declare -r SESAMAXNODES=${SESA_MAX_NODES:-64}
+declare -r SESANETDIR=${SESA_NETDIR:-$KHBASEDIR/Networks}
+declare -r SESAIODIR=${SESA_IODIR:-$KHBASEDIR/Ports}
+declare -r SESAEMUCMD=${SESA_EMUCMD-"qemu-system-x86_64"}
+
+# SESA Networking
+declare -r SESAMACPREFIX=${SESA_MAX_PREFIX:-00:00:00:00:0}
+declare -r SESAEXNETID=${SESA_EXNET_ID:-EX}
+declare -r SESAINNETID=${SESA_INNET_ID:-IN}
+declare -r SESAEXNETMOD=${SESA_EXNET_MOD:-660}
+declare -r SESAINNETMOD=${SESA_INNET_MOD:-660}
+declare -r SESAPVNETMOD=${SESA_PVNET_MOD:-600}
+
 
 function getNatIP
 {
@@ -98,7 +113,7 @@ function interfaceAddr
   if [[ -z $1 ]]
   then
     echo "USAGE: internfaceAddr <ip>" >&2
-    return -1
+    return 255
   fi
 
   for iface in $(myInterfaces) 
@@ -113,7 +128,7 @@ function interfaceAddr
       fi
   done
 
-  return -1
+  return 255
 }
 
 ttyRawWrite()
@@ -156,7 +171,7 @@ readUbootResponse()
    if [[ ! -c $tty || -z $num || -z $respfile ]]
    then
       echo "USAGE: $FUNCNAME <tty> <num> <respfile>"
-      exit -1 
+      exit 255 
    fi 
 
    if [[ -e $respfile ]]
@@ -164,7 +179,7 @@ readUbootResponse()
       if ! rm $respfile
       then
         echo "ERROR: $FUNCNAME: could not remove $respfile"
-        return -1
+        return 255
       fi
    fi
    touch ${respfile}.running
@@ -196,7 +211,7 @@ gatherUbootResponse()
    if [[ ! -c $tty || -z $num || -z $respfile ]]
    then
       echo "USAGE: $FUNCNAME <tty> <num> <respfile>" >&2
-      return -1
+      return 255
    fi
    
    if [[ -a ${respfile}.running ]] 
@@ -226,12 +241,12 @@ waitForUbootResponse()
     if [[ -z $respfile || -z $pollcnt ]]
     then
       echo "USAGE: $FUNCNAME <respfile> <pollcnt>"
-      return -1
+      return 255
     fi
     if [[ ! -e $respfile.pid ]]
     then
       echo "ERROR: could not fie $respfile.pid"
-      return -1
+      return 255
     fi
 
     workerpid=$(cat $respfile.pid)
@@ -256,7 +271,7 @@ waitForUbootResponse()
     then
       kill $workerpid >& /dev/null
     fi
-    return -1
+    return 255
 }
 
 function getUbootNodeInfo
@@ -270,7 +285,7 @@ function getUbootNodeInfo
     if [[ ! -c $tty || -z $num  ]]
     then
        echo "USAGE: $FUNCNAME <tty> <num> [extra info to get]"
-       exit -1
+       exit 255
     fi
     
     respfile=$(getRespfile)
@@ -293,7 +308,7 @@ function getUbootNodeInfo
     then
        rm $respfile
     fi
-    return -1
+    return 255
 }
 
 clearTTYBuffer()
@@ -370,6 +385,173 @@ isquish()
 }
 
 configNodes()
+{
+   if [[ -n $SESA ]]; then
+      SESAconfigNodes $@
+   else 
+      KHconfigNodes $@
+   fi
+   return $?
+}
+   
+
+SESAcreateNet()
+{
+  local nid=$1
+  local dir=$SESANETDIR/$nid
+
+
+  if [[ -a $dir/pid ]]
+  then
+      return 0
+  fi
+
+  if [[ ! -d $dir ]] && ! mkdir -p $dir; then
+    echo "YIKES mkdir of $dir failed" > /dev/stderr
+    return 255
+  fi
+  
+  #echo "vde_switch -d -s $dir/sock -M $dir/mgmt -p $dir/pid "
+  vde_switch -d -s $dir/sock -M $dir/mgmt -p $dir/pid 
+}
+
+#function SESAdeleteNode
+#{
+#  local dir=$KHCONDIR/$cid
+#}
+
+function SESAdeleteNet
+{
+  local nid=$1
+  local dir=$SESANETDIR/$nid
+
+  if [[ -a $dir/pid ]]; then
+    kill $(cat $dir/pid)
+  fi
+  return $?
+}
+
+SESACreatePort()
+{
+  local pid=$1
+  local node=$2 
+  local dir=$SESANETDIR/$pid
+
+}
+
+#SESAgenerateMac()
+#{
+#  return "00:00:00:00:00:00" 
+#}
+
+SESAconfigNodes()
+{
+  local khuser=$1
+  local pnetids=$2
+  local inet=$3
+  local xnet=$4
+  local conid=$5
+  local num=$6
+  local nodes="$7"
+  local dir=$KHCONSDIR/$conid
+  local n
+  local -i p
+  local -i j
+  local -i i
+  local -i ethoffset
+  local inetdesc
+  local tmp
+  local netcmd=""
+  local srlcmd=""
+  local concmd=""
+  #set -x
+
+  #echo "SESAconfigNodes: khuser=$khuser pnetids=$pnetids  inet=$inet xnet=$xnet conid=$conid num=$num, nodes=$nodes dir=$dir"
+
+  # Private network construction 
+  for p in ${pnetids//,/ }
+  do
+    if [[ ! -a $SESANETDIR/$p/sock ]]
+    then
+      SESAcreateNet $p $SESAPVNETMOD
+    fi
+  done
+
+  # Shared networks
+  ethoffset=0
+  if (( $xnet == 1 )) 
+  then
+    (( ethoffset++ ))
+  fi
+  if (( $inet == 1 ))
+  then
+    (( ethoffset++ ))
+  fi
+
+  # internal network
+  if (( $inet == 1 ))
+  then
+    if (( $ethoffset == 1 ))
+    then
+      inetdesc="network Internal : eth0"
+    else
+      inetdesc="network Internal : eth1"
+    fi
+  fi
+
+  # external network
+  if (( $xnet == 1 ))
+  then
+    echo "node $n: network External : eth0"
+  fi
+
+  if (( $inet == 1 ))
+  then
+     echo "$inetdesc"
+  fi
+
+  # node construction 
+  for n in $nodes; do
+    netcmd=""
+    j=$ethoffset
+
+    # internal network
+    if (( $inet == 1 ))
+    then
+      netcmd="$netcmd -net nic,vlan=2,macaddr=$SESAMACPREFIX:$n -net bridge,vlan=2,br=brI"
+    fi
+
+    # external network
+    if (( $xnet == 1 ))
+    then
+      netcmd="$netcmd -net nic,vlan=1,macaddr=$SESAMACPREFIX:$n -net bridge,vlan=1,br=brX"
+    fi
+
+    # private network(s)
+    for p in ${pnetids//,/ }; do
+      netcmd="$netcmd -net nic,vlan=$p,model=virtio,macaddr=$SESAMACPREFIX:$n -net vde,vlan=$p,sock=$SESANETDIR/${p}/sock"
+      echo "node $n: network $p : eth${j}"
+      (( j++ ))
+    done
+
+    # serial
+    echo "node $n: serial: $dir/com1"
+    srlcmd="--serial unix:$dir/com1,server,nowait"
+
+    # vde 
+    echo "node $n: console: $dir/vnc"
+    concmd="--vnc unix:$dir/vnc -name $khuser:$conid:$n"
+
+    set -x
+    # instantiate node!
+    #echo $SESAEMUCMD $netcmd $srlcmd $concmd  -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG 
+    $SESAEMUCMD $netcmd $srlcmd $concmd  -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG >$dir/vnclog 2>&1
+  done
+
+  return 0
+}
+
+KHconfigNodes()
 {
   local khuser=$1
   local pnetids=$2
@@ -510,6 +692,16 @@ configNodes()
 }
 
 function createCon
+{
+   if [[ -n $SESA ]]; then
+      SESAcreateCon $@
+   else 
+      KHcreateCon $@
+   fi
+   return $?
+}
+
+SESAcreateCon()
 { 
   local khuser=$1
   local conid=$2
@@ -522,7 +714,31 @@ function createCon
   if [[ -d $dir ]]
   then
       echo "ERROR: $dir already exists?!?" >&2
-      return -1
+      return 255
+  fi
+  
+  mkdir -p $dir
+
+  echo "$nodes" > $dir/nodes
+  echo "$khuser" > $dir/owner
+
+  return 0
+}
+
+KHcreateCon()
+{ 
+  local khuser=$1
+  local conid=$2
+  local nodes="$3"
+
+  local dir=$KHCONSDIR/$conid
+  local tty=$dir/tty
+  local procfile=$KHTTYPROCDIR/$conid
+
+  if [[ -d $dir ]]
+  then
+      echo "ERROR: $dir already exists?!?" >&2
+      return 255
   fi
   
   mkdir -p $dir
@@ -545,6 +761,16 @@ function createCon
 
 function createConUser
 {
+   if [[ -n $SESA ]]; then
+      SESAcreateConUser $@
+   else 
+      KHcreateConUser $@
+   fi
+   return $?
+}
+
+SESAcreateConUser()
+{
   local khuser=$1
   local pnetid=$2
   local conid=$3
@@ -560,17 +786,46 @@ function createConUser
   if [[ ! -d $dir ]]
   then
     echo "ERROR: createConUser: $dir does not exist?!?" >&2
-    return -1
+    return 255
   fi
   if ! mkdir $home
   then
     echo "ERROR: createConUser: could not make $home?!?" >&2
-    return -1
+    return 255
   fi
+
+  return 0
+}
+
+KHcreateConUser()
+{
+  local khuser=$1
+  local pnetid=$2
+  local conid=$3
+  local num=$4
+  local nodes="$5"
+
+  local dir=$KHCONSDIR/$conid
+  local conuser=$KHUSERPREFIX${conid}
+  local home=$dir/$conuser
+  local shell=$dir/conshell
+  local tty=$dir/tty
+
+  if [[ ! -d $dir ]]
+  then
+    echo "ERROR: createConUser: $dir does not exist?!?" >&2
+    return 255
+  fi
+  if ! mkdir $home
+  then
+    echo "ERROR: createConUser: could not make $home?!?" >&2
+    return 255
+  fi
+
   if grep "^$conuser:" /etc/passwd
   then
     echo "ERROR: $conuser already in /etc/passwd" >&2
-    return -1
+    return 255
   fi
 
   # FIXME:  Enable this when ready to try credentials
@@ -628,35 +883,39 @@ assignNodes()
        configdesc=$(configNodes $khuser $pnetid $inet $xnet $conid $num "${nodes[*]}")
        if (( $? == 0 ))
        then
-          if [[ -n $SSH_CONNECTION ]]
-          then
-              conip=${SSH_CONNECTION% *}
-              conip=${conip##* }
-              natip=$(getNatIP)
-	      if [[ -n $natip ]]; then
-		  if [[ $conip = $(cat $KHXIPFILE) ]]; then
+          if [[ -n $SESA ]]; then
+               echo "protocol: openfirmware"
+          else 
+             if [[ -n $SSH_CONNECTION ]]
+             then
+                conip=${SSH_CONNECTION% *}
+                conip=${conip##* }
+                natip=$(getNatIP)
+	        if [[ -n $natip ]]; then
+	  	  if [[ $conip = $(cat $KHXIPFILE) ]]; then
 		      conip=$natip
 		  fi
-	      fi
-	      echo $conuser@$conip
-	  else
-	      for i in $(myInterfaces)
-		do
-                ip=$(myIPAddrs $i)
-                if [[ -n $ip ]]
-		    then
-		    echo $conuser@$ip
-                fi
-              done
-          fi
-	  echo "protocol: uboot"
+	        fi
+	        echo $conuser@$conip
+             else
+		 for i in $(myInterfaces)
+		 do
+                     ip=$(myIPAddrs $i)
+                     if [[ -n $ip ]]
+		     then
+			 echo $conuser@$ip
+                     fi
+		 done
+             fi
+	     echo "protocol: uboot"
+         fi
           echo "$configdesc"
           echo "nodes: ${nodes[*]}"
           return 0
        fi
     fi
   fi
-  return -1
+  return 255
 }
 
 function getTotalNodes
@@ -666,7 +925,10 @@ function getTotalNodes
   if [[ -a $KHTOTALSIZEFILE ]]
   then 
      rc=$(cat $KHTOTALSIZEFILE)
+  else
+     rc=$SESAMAXNODES
   fi
+
   echo $rc
 }
 
@@ -702,16 +964,16 @@ locked_getNewPNetIDs()
 
   rc=$(cat $KHPNETIDFILE)
 
-  if (( ($rc + ($num-1)) > $KHPNETIDEND ))
+  if (( ($rc + ($num - 1)) > $KHPNETIDEND ))
   then
      echo "ERROR: locked_getNewPNetIDs: not enough id : NYI" >&2
-     return -1
+     return 255
   fi
   echo $(( $rc + $num )) > $KHPNETIDFILE
 
   if (( $num > 1 ))
   then
-    eval echo {${rc}..$(( $rc + ($num-1) ))}
+    eval echo {${rc}..$(( $rc + ($num - 1) ))}
   else
     echo $rc
   fi
@@ -728,7 +990,7 @@ locked_undoPnetIDs()
   if [[ -z $num ]]
   then
     echo "USAGE: $FUNCNAME: <num>" >&2
-    return -1
+    return 255
   fi
 
   if [[ -e $KHPNETIDFILE ]]
@@ -737,7 +999,7 @@ locked_undoPnetIDs()
     echo $(( $cur - $num )) > $KHPNETIDFILE
     return 0
   fi
-  return -1
+  return 255
 } 
 
 
@@ -753,7 +1015,7 @@ locked_getNewConID()
   if (( $rc == $KHCONIDEND )) 
   then
      echo "ERROR: locked_getNewConID: last id reached: NYI" >&2
-     return -1
+     return 255
   fi
   echo $(( $rc + 1 )) > $KHCONIDFILE
   echo $rc
@@ -777,7 +1039,7 @@ locked_undoConID()
       return 0
     fi
   fi
-  return -1
+  return 255
 } 
 
 
@@ -789,7 +1051,7 @@ function lock
     if [[ -z $lockname ]]
     then
       echo "USAGE: $FUNCNAME <lock>"  >&2
-      return -1
+      return 255
     fi
 
     if [[ ! -d $KHTUPLECTRLDIR ]]
@@ -798,7 +1060,7 @@ function lock
       then
          echo "ERROR: $FUNCNAME: $KHTUPLECTRLDIR does not exist "\
               "and cannot be created" >&2
-         exit -1
+         exit 255
       fi
     fi
 
@@ -814,7 +1076,7 @@ function unlock
     if [[ -z $lockname ]]
     then
       echo "USAGE: $FUNCNAME <lock>"  >&2
-      return -1
+      return 255
     fi
     # Release lock
     rm -f $lockfile
@@ -828,13 +1090,13 @@ function locked_unchecked_tupleCreateType
      if [[ -d $typedir ]]
      then
          echo "ERROR: $FUNCNAME: $typedir already exists" >&2
-         return -1
+         return 255
      fi
 
      if  ! mkdir -p $typedir
      then
         echo "ERROR: $FUNCNAME: could not create typedir" >&2
-        return -1
+        return 255
      fi
 
 }
@@ -846,7 +1108,7 @@ function tupleCreateType
    if [[ -z $type ]]
    then
      echo "USAGE: $FUNCNAME <type>"  >&2
-     return -1
+     return 255
    fi
    
    lock tuples
@@ -863,7 +1125,7 @@ locked_unchecked_tupleTypeExists()
   then
     return 0
   else
-    return -1
+    return 255
   fi
 }
 
@@ -875,7 +1137,7 @@ function tupleTypeExists
   if [[ -z $type ]]
   then
     echo "USAGE: $FUNCNAME <type>"  >&2
-    return -1
+    return 255
   fi
 
   lock tuples
@@ -900,7 +1162,7 @@ locked_unchecked_tupleCmd()
     rc=0
   else
 #    eval echo "ERROR: $FUNCNAME: $cmd $typedir/$tuplepattern: FAILED"  >&2
-    rc=-1
+    rc=255
   fi
 
   return $rc
@@ -916,7 +1178,7 @@ function tupleCmd
   if [[ -z $cmd || -z $type || -z $tuplepattern ]]
   then
     echo "USAGE: $FUNCNAME <cmd> <type> <tuplepattern>" >&2
-    return -1
+    return 255
   fi
 
 
@@ -925,7 +1187,7 @@ function tupleCmd
   if (( $? != 0 ))
   then
     echo "ERROR: $FUNCNAME: $cmd is not a executable command"  >&2
-    return -1
+    return 255
   fi
 
   lock tuples 
@@ -935,7 +1197,7 @@ function tupleCmd
        rc=$?
      else 
        echo "ERROR: $FUNCNAME: Tuple type $type does not exist"
-       rc=-1
+       rc=255
       fi
   unlock tuples 
   return $rc
@@ -970,7 +1232,7 @@ function validkhuser
    then
      return 0
    else
-     return -1
+     return 255
    fi
 }
 
@@ -989,7 +1251,7 @@ function locked_touch_nodes
   then
      echo "USAGE: $FUNCNAME <nodeidpat> <ownerpat> <pnetidpat> <inetflgpat>"\
          " <xnetflgpat> <considpat>"
-     return -1
+     return 255
   fi
   
   locked_unchecked_tupleCmd touch Node \
@@ -1012,7 +1274,7 @@ function locked_ls_nodes
   then
      echo "USAGE: $FUNCNAME <nodeidpat> <ownerpat> <pnetidpat> <inetflgpat>"\
          " <xnetflg> <consid>"
-     return -1
+     return 255
   fi
   
   locked_unchecked_tupleCmd ls Node \
@@ -1035,7 +1297,7 @@ function locked_rm_nodes
   then
      echo "USAGE: $FUNCNAME <nodeidpat> <ownerpat> <pnetidpat> <inetflgpat>"\
          " <xnetflgpat> <considpat>"
-     return -1
+     return 255
   fi
   
   locked_unchecked_tupleCmd rm Node \
@@ -1052,7 +1314,7 @@ function locked_touch_users
   if [[ -z $userpat || -z $credpat ]]
   then
     echo "USAGE: $FUNCNAME <userpat> <credpat>"
-    return -1
+    return 255
   fi
   locked_unchecked_tupleCmd touch User "${userpat}:$credpat" 
   return $?
@@ -1067,7 +1329,7 @@ function locked_ls_users
   if [[ -z $userpat || -z $credpat ]]
   then
     echo "USAGE: $FUNCNAME <userpat> <credpat>"
-    return -1
+    return 255
   fi
   locked_unchecked_tupleCmd ls User "${userpat}:$credpat" 
   return $?
@@ -1082,7 +1344,7 @@ function locked_rm_users
   if [[ -z $userpat || -z $credpat ]]
   then
     echo "USAGE: $FUNCNAME <userpat> <credpat>"
-    return -1
+    return 255
   fi
   locked_unchecked_tupleCmd rm User "${userpat}:$credpat" 
   return $?
@@ -1097,7 +1359,7 @@ function locked_touch_pnets
   if [[ -z $pnetidpat || -z $ownerpat ]]
   then
     echo "USAGE: $FUNCNAME <pnetidpat> <ownerpat>"
-    return -1
+    return 255
   fi
   locked_unchecked_tupleCmd touch Pnet "${pnetidpat}:$ownerpat" 
   return $?
@@ -1112,7 +1374,7 @@ function locked_ls_pnets
   if [[ -z $pnetidpat || -z $ownerpat ]]
   then
     echo "USAGE: $FUNCNAME <pnetidpat> <ownerpat>"
-    return -1
+    return 255
   fi
   locked_unchecked_tupleCmd ls Pnet "${pnetidpat}:$ownerpat" 
   return $?
@@ -1127,7 +1389,7 @@ function locked_rm_pnets
   if [[ -z $pnetidpat || -z $ownerpat ]]
   then
     echo "USAGE: $FUNCNAME <pnetidpat> <ownerpat>"
-    return -1
+    return 255
   fi
   locked_unchecked_tupleCmd rm Pnet "${pnetidpat}:$ownerpat" 
   return $?
@@ -1144,7 +1406,7 @@ locked_dealloc_pnetids()
    if [[ -z $users || -z $pnetids || -z $num ]]
    then
       echo "ERROR:  locked_dealloc_pnetids <user> <comma list of pnetids> <num in list>"
-      return -1
+      return 255
    fi
 
    pnetpat="$(commalisttopat $pnetids)"
@@ -1169,7 +1431,7 @@ function locked_allocate_pnetids
    if [[ -z $users ]] || (( $num <= 0 ))
    then
       echo "USAGE: $FUNCNAME <comma seperated list of users> <num>"
-      return -1
+      return 255
    fi
 
    userpat="$(commalisttopat $users)"
@@ -1177,7 +1439,7 @@ function locked_allocate_pnetids
    if ! locked_ls_users "${userpat}" "*" >/dev/null 2>&1
    then
       echo "ERROR: $FUNCNAME some of the users specified do not exist."
-      return -1
+      return 255
    fi
 
    pnetids="$(locked_getNewPNetIDs $num)"
@@ -1186,7 +1448,7 @@ function locked_allocate_pnetids
 
    if (( $? != 0 ))
    then
-     return -1
+     return 255
    fi
 
    locked_touch_pnets "$pnetpat" "$userpat"
@@ -1208,7 +1470,7 @@ locked_initFreeNodes()
                       "$FREEINETFLG" "$FREEXNETFLG" "$FREECONID"
 
    myrank=$(getMyRank)
-   if (( $myrank <= $maxnoderank ))
+   if [[ -n $myrank ]] && (( $myrank <= $maxnoderank ))
    then
      locked_rm_nodes "$myrank" "*" "*" "*" "*" "*"
    fi    
@@ -1268,7 +1530,7 @@ function acquireNodes
       ("i") inet=1; (( optcount=optcount + 1));;
       ("x") xnet=1; (( optcount=optcount + 1));;
       ("c") cred="$OPTARG"; (( optcount=optcount + 2));;
-      ("h") usage  acquireNodes; exit -1;;
+      ("h") usage  acquireNodes; exit 255;;
     esac
   done
  
@@ -1279,14 +1541,14 @@ function acquireNodes
   then
      echo "ERROR:  must specify user" >&2
      usage acquireNodes
-     exit -1
+     exit 255
   fi
       
   if ! validkhuser $khuser
   then
     echo "ERROR: invalid user $khuser" >&2
     usage acquireNodes
-    exit -1
+    exit 255
   fi
 
   num=$2
@@ -1299,7 +1561,7 @@ function acquireNodes
   then
     echo "ERROR: allocation of 0 nodes not supported" >&2
     usage acquireNodes
-    exit -1
+    exit 255
   fi
 
   lock tuples
@@ -1324,7 +1586,7 @@ function acquireNodes
              " $khuser owns is: " ${curpnetids[@]}
         if (( newuser == 1 )); then locked_rm_users "$khuser" "$cred"; fi
         unlock tuples
-        return -1
+        return 255
       fi
     fi 
 
@@ -1343,7 +1605,7 @@ function acquireNodes
            " private networks (${curpnetids[@]}) for $khuser with the -n flage"\
            " or use -c to specify the number of new network ids to create."
         unlock tuples
-        return -1
+        return 255
       fi
     fi
 
@@ -1367,7 +1629,7 @@ function acquireNodes
       if (( $newuser == 1 )); then locked_rm_users "$khuser" "$cred"; fi
       if (( $createpnets > 0 )); then locked_dealloc_pnetids "$khuser" "$crepnetids" "$createpnets"; fi
       unlock tuples
-      return -1
+      return 255
     fi
    
     # to keep things fast we cheat :-( and do direct commands on Node tuple dir
@@ -1387,7 +1649,7 @@ function acquireNodes
       locked_undoConID $conid
       echo "not enough nodes available"
       unlock tuples
-      return -1;
+      return 255;
     fi
     
   unlock tuples 
@@ -1438,7 +1700,7 @@ processargs()
   if [[ $# == 0 ]]
   then
     usage
-    exit -1
+    exit 255
   fi
 
   dofunc=$1
