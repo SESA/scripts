@@ -1,5 +1,5 @@
 #!/bin/bash
-#set -x
+set -x
 
 #####################################
 #
@@ -53,20 +53,31 @@ declare -i BUFFERTTY=1
 
 typeset dofunc
 
-# SESA General
-declare -r SESAMAXNODES=${SESA_MAX_NODES:-64}
-declare -r SESANETDIR=${SESA_NETDIR:-$KHBASEDIR/Networks}
-declare -r SESAIODIR=${SESA_IODIR:-$KHBASEDIR/Ports}
-declare -r SESAEMUCMD=${SESA_EMUCMD-"qemu-system-x86_64"}
+# configurable functions
+declare  configNodes=KHconfigNodes
+declare  createCon=KHcreateCon
+declare  createConUser=KHcreateConUser
 
-# SESA Networking
-declare -r SESAMACPREFIX=${SESA_MAX_PREFIX:-00:00:00:00:0}
-declare -r SESAEXNETID=${SESA_EXNET_ID:-EX}
-declare -r SESAINNETID=${SESA_INNET_ID:-IN}
-declare -r SESAEXNETMOD=${SESA_EXNET_MOD:-660}
-declare -r SESAINNETMOD=${SESA_INNET_MOD:-660}
-declare -r SESAPVNETMOD=${SESA_PVNET_MOD:-600}
 
+if [[ -n SESA ]]; then
+  # SESA General
+  declare -r SESAMAXNODES=${SESA_MAX_NODES:-64}
+  declare -r SESANETDIR=${SESA_NETDIR:-$KHBASEDIR/Networks}
+  declare -r SESAIODIR=${SESA_IODIR:-$KHBASEDIR/Ports}
+  declare -r SESAEMUCMD=${SESA_EMUCMD-"qemu-system-x86_64"}
+
+  # SESA Networking
+  declare -r SESAMACPREFIX=${SESA_MAX_PREFIX:-00:00:00:00:0}
+  declare -r SESAEXNETID=${SESA_EXNET_ID:-EX}
+  declare -r SESAINNETID=${SESA_INNET_ID:-IN}
+  declare -r SESAEXNETMOD=${SESA_EXNET_MOD:-660}
+  declare -r SESAINNETMOD=${SESA_INNET_MOD:-660}
+  declare -r SESAPVNETMOD=${SESA_PVNET_MOD:-600}
+
+  declare  configNodes=SESAconfigNodes
+  declare  createCon=SESAcreateCon
+  declare  createConUser=SESAcreateConUser
+fi
 
 function getNatIP
 {
@@ -384,16 +395,6 @@ isquish()
    return 0
 }
 
-configNodes()
-{
-   if [[ -n $SESA ]]; then
-      SESAconfigNodes $@
-   else 
-      KHconfigNodes $@
-   fi
-   return $?
-}
-   
 
 SESAcreateNet()
 {
@@ -446,6 +447,7 @@ SESACreatePort()
 
 SESAconfigNodes()
 {
+  set -x
   local khuser=$1
   local pnetids=$2
   local inet=$3
@@ -453,7 +455,8 @@ SESAconfigNodes()
   local conid=$5
   local num=$6
   local nodes="$7"
-  local dir=$KHCONSDIR/$conid
+  local basedir=$KHCONSDIR/$conid
+  local dir
   local n
   local -i p
   local -i j
@@ -464,7 +467,6 @@ SESAconfigNodes()
   local netcmd=""
   local srlcmd=""
   local concmd=""
-  #set -x
 
   #echo "SESAconfigNodes: khuser=$khuser pnetids=$pnetids  inet=$inet xnet=$xnet conid=$conid num=$num, nodes=$nodes dir=$dir"
 
@@ -511,8 +513,9 @@ SESAconfigNodes()
   fi
 
   # node construction 
-  for n in $nodes; do
+  for n in ${nodes[@]}; do
     netcmd=""
+    dir=$basedir/nodes/$n
     j=$ethoffset
 
     # internal network
@@ -542,10 +545,8 @@ SESAconfigNodes()
     echo "node $n: console: $dir/vnc"
     concmd="--vnc unix:$dir/vnc -name $khuser:$conid:$n"
 
-    set -x
     # instantiate node!
-    #echo $SESAEMUCMD $netcmd $srlcmd $concmd  -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG 
-    $SESAEMUCMD $netcmd $srlcmd $concmd  -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG >$dir/vnclog 2>&1
+    $SESAEMUCMD $netcmd $srlcmd $concmd -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG > $dir/vnclog 2>&1
   done
 
   return 0
@@ -691,16 +692,6 @@ KHconfigNodes()
   return 0
 }
 
-function createCon
-{
-   if [[ -n $SESA ]]; then
-      SESAcreateCon $@
-   else 
-      KHcreateCon $@
-   fi
-   return $?
-}
-
 SESAcreateCon()
 { 
   local khuser=$1
@@ -708,8 +699,6 @@ SESAcreateCon()
   local nodes="$3"
 
   local dir=$KHCONSDIR/$conid
-  local tty=$dir/tty
-  local procfile=$KHTTYPROCDIR/$conid
 
   if [[ -d $dir ]]
   then
@@ -718,8 +707,13 @@ SESAcreateCon()
   fi
   
   mkdir -p $dir
+  mkdir -p $dir/nodes
 
-  echo "$nodes" > $dir/nodes
+  for n in ${nodes[@]}; do
+    mkdir -p $dir/nodes/$n
+  done
+
+  echo "$nodes" > $dir/nodes/list
   echo "$khuser" > $dir/owner
 
   return 0
@@ -757,16 +751,6 @@ KHcreateCon()
   fi
 
   return 0
-}
-
-function createConUser
-{
-   if [[ -n $SESA ]]; then
-      SESAcreateConUser $@
-   else 
-      KHcreateConUser $@
-   fi
-   return $?
 }
 
 SESAcreateConUser()
@@ -876,11 +860,11 @@ assignNodes()
   local configdesc
   local natip
 
-  if createCon $khuser $conid "${nodes[*]}"
+  if $createCon $khuser $conid "${nodes[*]}"
   then
-    if createConUser $khuser $pnetid $conid $num "${nodes[*]}"
+    if $createConUser $khuser $pnetid $conid $num "${nodes[*]}"
     then
-       configdesc=$(configNodes $khuser $pnetid $inet $xnet $conid $num "${nodes[*]}")
+       configdesc=$($configNodes $khuser $pnetid $inet $xnet $conid $num "${nodes[*]}")
        if (( $? == 0 ))
        then
           if [[ -n $SESA ]]; then
