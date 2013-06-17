@@ -397,19 +397,38 @@ configNodes()
 
 SESAcreateNet()
 {
-  local pid=$1
-  local mod=$2 
-  local dir=$SESANETDIR/$pid
-  #TODO tap=
+  local nid=$1
+  local dir=$SESANETDIR/$nid
 
-  if [[ -d $dir ]]
+
+  if [[ -a $dir/pid ]]
   then
-      echo "ERROR: $dir already exists?!?" >&2
-      return 255
+      return 0
+  fi
+
+  if [[ ! -d $dir ]] && ! mkdir -p $dir; then
+    echo "YIKES mkdir of $dir failed" > /dev/stderr
+    return 255
   fi
   
-  #echo "vde_switch -d -s $SESANETDIR/$pid/sock -M $SESANETDIR/$pid/mgmt -mod $mod &"
-  vde_switch -daemon -sock=$dir/sock -M $dir/mgmt -mod $mod &
+  #echo "vde_switch -d -s $dir/sock -M $dir/mgmt -p $dir/pid "
+  vde_switch -d -s $dir/sock -M $dir/mgmt -p $dir/pid 
+}
+
+#function SESAdeleteNode
+#{
+#  local dir=$KHCONDIR/$cid
+#}
+
+function SESAdeleteNet
+{
+  local nid=$1
+  local dir=$SESANETDIR/$nid
+
+  if [[ -a $dir/pid ]]; then
+    kill $(cat $dir/pid)
+  fi
+  return $?
 }
 
 SESACreatePort()
@@ -445,80 +464,88 @@ SESAconfigNodes()
   local netcmd=""
   local srlcmd=""
   local concmd=""
-  set -x
+  #set -x
 
-  echo "SESAconfigNodes: khuser=$khuser pnetids=$pnetids  inet=$inet xnet=$xnet conid=$conid num=$num, nodes=$nodes dir=$dir"
-
-  # Shared network construction 
-  ethoffset=0
-  if (( $xnet == 1 )) 
-  then
-    if [[ ! -a $SESANETDIR/$SESAEXNETID/sock ]]
-    then
-      SESAcreateNet $SESAEXNETID $SESAEXNETMOD
-    fi
-    (( ethoffset++ ))
-  fi
-  if (( $inet == 1 ))
-  then
-    if [[ ! -a $SESANETDIR/$SESAINNETID/sock ]]
-    then
-      SESAcreateNet $SESAINNETID $SESAINNETMOD
-    fi
-    (( ethoffset++ ))
-  fi
+  #echo "SESAconfigNodes: khuser=$khuser pnetids=$pnetids  inet=$inet xnet=$xnet conid=$conid num=$num, nodes=$nodes dir=$dir"
 
   # Private network construction 
-  j=$ethoffset
   for p in ${pnetids//,/ }
   do
-    # TODO: check permissions
     if [[ ! -a $SESANETDIR/$p/sock ]]
     then
       SESAcreateNet $p $SESAPVNETMOD
     fi
   done
 
+  # Shared networks
+  ethoffset=0
+  if (( $xnet == 1 )) 
+  then
+    (( ethoffset++ ))
+  fi
+  if (( $inet == 1 ))
+  then
+    (( ethoffset++ ))
+  fi
+
+  # internal network
+  if (( $inet == 1 ))
+  then
+    if (( $ethoffset == 1 ))
+    then
+      inetdesc="network Internal : eth0"
+    else
+      inetdesc="network Internal : eth1"
+    fi
+  fi
+
+  # external network
+  if (( $xnet == 1 ))
+  then
+    echo "node $n: network External : eth0"
+  fi
+
+  if (( $inet == 1 ))
+  then
+     echo "$inetdesc"
+  fi
+
   # node construction 
   for n in $nodes; do
     netcmd=""
     j=$ethoffset
+
     # internal network
     if (( $inet == 1 ))
     then
       netcmd="$netcmd -net nic,vlan=2,macaddr=$SESAMACPREFIX:$n -net bridge,vlan=2,br=brI"
-      if (( $ethoffset == 1 ))
-      then
-        inetdesc="node $n: network Internal : eth0"
-      else
-        inetdesc="node $n: network Internal : eth1"
-      fi
     fi
+
     # external network
     if (( $xnet == 1 ))
     then
       netcmd="$netcmd -net nic,vlan=1,macaddr=$SESAMACPREFIX:$n -net bridge,vlan=1,br=brX"
-      echo "node $n: network External : eth0"
     fi
+
     # private network(s)
     for p in ${pnetids//,/ }; do
-      echo  "node $n: -net nic,vlan=$p,model=virtio,macaddr=$SESAMACPREFIX:$n -net vde,vlan=$p,sock=$SESANETDIR/${p}/sock"
-      #TODO unique macaddr
       netcmd="$netcmd -net nic,vlan=$p,model=virtio,macaddr=$SESAMACPREFIX:$n -net vde,vlan=$p,sock=$SESANETDIR/${p}/sock"
       echo "node $n: network $p : eth${j}"
       (( j++ ))
     done
 
     # serial
-    echo "node $n: serial : "
-    srlcmd="--serial stdio --nographic"
+    echo "node $n: serial: $dir/com1"
+    srlcmd="--serial unix:$dir/com1,server,nowait"
 
     # vde 
-    echo "node $n: console : "
-    concom="--vde localhost:222"
+    echo "node $n: console: $dir/vnc"
+    concmd="--vnc unix:$dir/vnc -name $khuser:$conid:$n"
 
+    set -x
     # instantiate node!
-    $SESA_EMUCMD $netcmd $srlcmd $concom $SESA_RUNTIME &
+    #echo $SESAEMUCMD $netcmd $srlcmd $concmd  -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG 
+    $SESAEMUCMD $netcmd $srlcmd $concmd  -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG >$dir/vnclog 2>&1
   done
 
   return 0
@@ -857,7 +884,6 @@ assignNodes()
        if (( $? == 0 ))
        then
           if [[ -n $SESA ]]; then
-               echo "DO SOME SESA STUFF HERE"
                echo "protocol: openfirmware"
           else 
              if [[ -n $SSH_CONNECTION ]]
