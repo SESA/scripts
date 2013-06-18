@@ -1,5 +1,5 @@
 #!/bin/bash
-set -x
+#set -x
 
 #####################################
 #
@@ -432,22 +432,15 @@ function SESAdeleteNet
   return $?
 }
 
-SESACreatePort()
+function SESAgenerateMac()
 {
-  local pid=$1
-  local node=$2 
-  local dir=$SESANETDIR/$pid
-
+  local mac
+  printf -v mac 'DE:AD:BE:EF:%02X:%02X' $((RANDOM%256)) $((RANDOM%256))
+  echo $mac
 }
-
-#SESAgenerateMac()
-#{
-#  return "00:00:00:00:00:00" 
-#}
 
 SESAconfigNodes()
 {
-  set -x
   local khuser=$1
   local pnetids=$2
   local inet=$3
@@ -457,6 +450,7 @@ SESAconfigNodes()
   local nodes="$7"
   local basedir=$KHCONSDIR/$conid
   local dir
+  local mac
   local n
   local -i p
   local -i j
@@ -490,50 +484,30 @@ SESAconfigNodes()
     (( ethoffset++ ))
   fi
 
-  # internal network
-  if (( $inet == 1 ))
-  then
-    if (( $ethoffset == 1 ))
-    then
-      inetdesc="network Internal : eth0"
-    else
-      inetdesc="network Internal : eth1"
-    fi
-  fi
-
-  # external network
-  if (( $xnet == 1 ))
-  then
-    echo "node $n: network External : eth0"
-  fi
-
-  if (( $inet == 1 ))
-  then
-     echo "$inetdesc"
-  fi
-
   # node construction 
   for n in ${nodes[@]}; do
     netcmd=""
     dir=$basedir/nodes/$n
     j=$ethoffset
-
-    # internal network
-    if (( $inet == 1 ))
-    then
-      netcmd="$netcmd -net nic,vlan=2,macaddr=$SESAMACPREFIX:$n -net bridge,vlan=2,br=brI"
-    fi
-
     # external network
     if (( $xnet == 1 ))
     then
-      netcmd="$netcmd -net nic,vlan=1,macaddr=$SESAMACPREFIX:$n -net bridge,vlan=1,br=brX"
+      mac=$(SESAgenerateMac)
+      netcmd="$netcmd -net nic,vlan=1,macaddr=$mac -net bridge,vlan=1,br=brX"
+      echo "node $n: network External : eth0 : $mac"
     fi
-
+    # internal network
+    if (( $inet == 1 ))
+    then
+      mac=$(SESAgenerateMac)
+      netcmd="$netcmd -net nic,vlan=2,macaddr=$mac -net bridge,vlan=2,br=brI"
+      echo "node $n: network Internal : eth1 : $mac"
+    fi
     # private network(s)
     for p in ${pnetids//,/ }; do
-      netcmd="$netcmd -net nic,vlan=$p,model=virtio,macaddr=$SESAMACPREFIX:$n -net vde,vlan=$p,sock=$SESANETDIR/${p}/sock"
-      echo "node $n: network $p : eth${j}"
+      mac=$(SESAgenerateMac)
+      netcmd="$netcmd -net nic,vlan=$p,model=virtio,macaddr=$mac -net vde,vlan=$p,sock=$SESANETDIR/${p}/sock"
+      echo "node $n: network Private $p : eth${j} : $mac"
       (( j++ ))
     done
 
@@ -546,7 +520,7 @@ SESAconfigNodes()
     concmd="--vnc unix:$dir/vnc -name $khuser:$conid:$n"
 
     # instantiate node!
-    $SESAEMUCMD $netcmd $srlcmd $concmd -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG > $dir/vnclog 2>&1
+    $SESAEMUCMD $netcmd $srlcmd $concmd -enable-kvm -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG > $dir/vnclog 2>&1
   done
 
   return 0
