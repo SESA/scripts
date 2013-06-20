@@ -13,6 +13,8 @@
 #####################################
 if [[ $BASH_VERSION != 3.1.* ]]; then shopt -s compat31; fi
 
+shopt -s extglob
+
 PATH=$PATH:/sbin
 
 declare -r KHBASEDIR=${KHCTL_BASEDIR:-/home/kh}
@@ -61,9 +63,8 @@ declare  createConUser=KHcreateConUser
 
 if [[ -n SESA ]]; then
   # SESA General
-  declare -r SESAMAXNODES=${SESA_MAX_NODES:-64}
+  declare -r SESAMAXNODES=${SESA_MAX_NODES:-256}
   declare -r SESANETDIR=${SESA_NETDIR:-$KHBASEDIR/Networks}
-  declare -r SESAIODIR=${SESA_IODIR:-$KHBASEDIR/Ports}
   declare -r SESAEMUCMD=${SESA_EMUCMD-"qemu-system-x86_64"}
 
   # SESA Networking
@@ -416,10 +417,36 @@ SESAcreateNet()
   vde_switch -d -s $dir/sock -M $dir/mgmt -p $dir/pid 
 }
 
-#function SESAdeleteNode
-#{
-#  local dir=$KHCONDIR/$cid
-#}
+#TODO: releaseNode
+
+function SESAcleanAll
+{
+  local consoles=( $(tupleCmd echo Node '!(*:_FREE_:*:*:*)') )
+  local files=( ${consoles[@]/*:/$KHCONSDIR/} )
+  kill $( cat ${files[@]/%//nodes/\*/pid} | sort -u )
+  #verify 
+  sleep 3
+  local rem=$( ps --no-heading -o pid $( cat ${files[@]/%//nodes/\*/pid} ))
+  if [[ ${#rem[@]} > 1 ]]
+  then
+    echo "ERROR: These processes escaped death"
+    echo ${rem[@]}
+  fi
+  #clean networks
+  kill $( cat $SESANETDIR/*/pid   )
+
+  #clear db
+  rm -rf $KHCTLDIR/*
+  rm -rf $KHTUPLEDIR/* 
+  rm -rf $KHCONSDIR/* 
+  rm -rf $SESANETDIR/* 
+}
+
+
+function SESAdeleteNode
+{
+  local dir=$KHCONDIR/$cid
+}
 
 function SESAdeleteNet
 {
