@@ -66,6 +66,7 @@ if [[ -n SESA ]]; then
   declare -r SESAMAXNODES=${SESA_MAX_NODES:-256}
   declare -r SESANETDIR=${SESA_NETDIR:-$KHBASEDIR/Networks}
   declare -r SESAEMUCMD=${SESA_EMUCMD-"qemu-system-x86_64"}
+  declare -r SESAMNTDIR=${SESA_MNTDIR-$KHBASEDIR}
 
   # SESA Networking
   declare -r SESAMACPREFIX=${SESA_MAX_PREFIX:-00:00:00:00:0}
@@ -468,6 +469,7 @@ function SESAgenerateMac()
 
 SESAconfigNodes()
 {
+  #set -x
   local khuser=$1
   local pnetids=$2
   local inet=$3
@@ -488,6 +490,7 @@ SESAconfigNodes()
   local netcmd=""
   local srlcmd=""
   local concmd=""
+  local mntcmd=""
 
   #echo "SESAconfigNodes: khuser=$khuser pnetids=$pnetids  inet=$inet xnet=$xnet conid=$conid num=$num, nodes=$nodes dir=$dir"
 
@@ -540,14 +543,20 @@ SESAconfigNodes()
 
     # serial
     echo "node $n: serial: $dir/com1"
-    srlcmd="--serial unix:$dir/com1,server,nowait"
+    srlcmd="-serial unix:$dir/com1,server,nowait"
 
     # vde 
     echo "node $n: console: $dir/vnc"
-    concmd="--vnc unix:$dir/vnc -name $khuser:$conid:$n"
+    concmd="-vnc unix:$dir/vnc -name $khuser:$conid:$n"
+
+    # mount
+    if [[ -d $SESAMNTDIR ]]
+    then
+      mntcmd="-drive file=fat:rw:$SESAMNTDIR"
+    fi
 
     # instantiate node!
-    $SESAEMUCMD $netcmd $srlcmd $concmd -enable-kvm -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG > $dir/vnclog 2>&1
+    $SESAEMUCMD $netcmd $srlcmd $concmd -enable-kvm -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG $mntcmd > $dir/vnclog 2>&1
   done
 
   return 0
