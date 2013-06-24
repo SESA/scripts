@@ -13,6 +13,8 @@
 #####################################
 if [[ $BASH_VERSION != 3.1.* ]]; then shopt -s compat31; fi
 
+shopt -s extglob
+
 PATH=$PATH:/sbin
 
 declare -r KHBASEDIR=${KHCTL_BASEDIR:-/home/kh}
@@ -53,20 +55,31 @@ declare -i BUFFERTTY=1
 
 typeset dofunc
 
-# SESA General
-declare -r SESAMAXNODES=${SESA_MAX_NODES:-64}
-declare -r SESANETDIR=${SESA_NETDIR:-$KHBASEDIR/Networks}
-declare -r SESAIODIR=${SESA_IODIR:-$KHBASEDIR/Ports}
-declare -r SESAEMUCMD=${SESA_EMUCMD-"qemu-system-x86_64"}
+# configurable functions
+declare  configNodes=KHconfigNodes
+declare  createCon=KHcreateCon
+declare  createConUser=KHcreateConUser
 
-# SESA Networking
-declare -r SESAMACPREFIX=${SESA_MAX_PREFIX:-00:00:00:00:0}
-declare -r SESAEXNETID=${SESA_EXNET_ID:-EX}
-declare -r SESAINNETID=${SESA_INNET_ID:-IN}
-declare -r SESAEXNETMOD=${SESA_EXNET_MOD:-660}
-declare -r SESAINNETMOD=${SESA_INNET_MOD:-660}
-declare -r SESAPVNETMOD=${SESA_PVNET_MOD:-600}
 
+if [[ -n SESA ]]; then
+  # SESA General
+  declare -r SESAMAXNODES=${SESA_MAX_NODES:-256}
+  declare -r SESANETDIR=${SESA_NETDIR:-$KHBASEDIR/Networks}
+  declare -r SESAEMUCMD=${SESA_EMUCMD-"qemu-system-x86_64"}
+  declare -r SESAMNTDIR=${SESA_MNTDIR-$KHBASEDIR}
+
+  # SESA Networking
+  declare -r SESAMACPREFIX=${SESA_MAX_PREFIX:-00:00:00:00:0}
+  declare -r SESAEXNETID=${SESA_EXNET_ID:-EX}
+  declare -r SESAINNETID=${SESA_INNET_ID:-IN}
+  declare -r SESAEXNETMOD=${SESA_EXNET_MOD:-660}
+  declare -r SESAINNETMOD=${SESA_INNET_MOD:-660}
+  declare -r SESAPVNETMOD=${SESA_PVNET_MOD:-600}
+
+  declare  configNodes=SESAconfigNodes
+  declare  createCon=SESAcreateCon
+  declare  createConUser=SESAcreateConUser
+fi
 
 function getNatIP
 {
@@ -384,16 +397,6 @@ isquish()
    return 0
 }
 
-configNodes()
-{
-   if [[ -n $SESA ]]; then
-      SESAconfigNodes $@
-   else 
-      KHconfigNodes $@
-   fi
-   return $?
-}
-   
 
 SESAcreateNet()
 {
@@ -415,10 +418,36 @@ SESAcreateNet()
   vde_switch -d -s $dir/sock -M $dir/mgmt -p $dir/pid 
 }
 
-#function SESAdeleteNode
-#{
-#  local dir=$KHCONDIR/$cid
-#}
+#TODO: releaseNode
+
+function SESAcleanAll
+{
+  local consoles=( $(tupleCmd echo Node '!(*:_FREE_:*:*:*)') )
+  local files=( ${consoles[@]/*:/$KHCONSDIR/} )
+  kill $( cat ${files[@]/%//nodes/\*/pid} | sort -u )
+  #verify 
+  sleep 3
+  local rem=$( ps --no-heading -o pid $( cat ${files[@]/%//nodes/\*/pid} ))
+  if [[ ${#rem[@]} > 1 ]]
+  then
+    echo "ERROR: These processes escaped death"
+    echo ${rem[@]}
+  fi
+  #clean networks
+  kill $( cat $SESANETDIR/*/pid   )
+
+  #clear db
+  rm -rf $KHCTLDIR/*
+  rm -rf $KHTUPLEDIR/* 
+  rm -rf $KHCONSDIR/* 
+  rm -rf $SESANETDIR/* 
+}
+
+
+function SESAdeleteNode
+{
+  local dir=$KHCONDIR/$cid
+}
 
 function SESAdeleteNet
 {
@@ -431,21 +460,16 @@ function SESAdeleteNet
   return $?
 }
 
-SESACreatePort()
+function SESAgenerateMac()
 {
-  local pid=$1
-  local node=$2 
-  local dir=$SESANETDIR/$pid
-
+  local mac
+  printf -v mac 'DE:AD:BE:EF:%02X:%02X' $((RANDOM%256)) $((RANDOM%256))
+  echo $mac
 }
-
-#SESAgenerateMac()
-#{
-#  return "00:00:00:00:00:00" 
-#}
 
 SESAconfigNodes()
 {
+  #set -x
   local khuser=$1
   local pnetids=$2
   local inet=$3
@@ -453,7 +477,9 @@ SESAconfigNodes()
   local conid=$5
   local num=$6
   local nodes="$7"
-  local dir=$KHCONSDIR/$conid
+  local basedir=$KHCONSDIR/$conid
+  local dir
+  local mac
   local n
   local -i p
   local -i j
@@ -464,7 +490,7 @@ SESAconfigNodes()
   local netcmd=""
   local srlcmd=""
   local concmd=""
-  #set -x
+  local mntcmd=""
 
   #echo "SESAconfigNodes: khuser=$khuser pnetids=$pnetids  inet=$inet xnet=$xnet conid=$conid num=$num, nodes=$nodes dir=$dir"
 
@@ -488,64 +514,49 @@ SESAconfigNodes()
     (( ethoffset++ ))
   fi
 
-  # internal network
-  if (( $inet == 1 ))
-  then
-    if (( $ethoffset == 1 ))
-    then
-      inetdesc="network Internal : eth0"
-    else
-      inetdesc="network Internal : eth1"
-    fi
-  fi
-
-  # external network
-  if (( $xnet == 1 ))
-  then
-    echo "node $n: network External : eth0"
-  fi
-
-  if (( $inet == 1 ))
-  then
-     echo "$inetdesc"
-  fi
-
   # node construction 
-  for n in $nodes; do
+  for n in ${nodes[@]}; do
     netcmd=""
+    dir=$basedir/nodes/$n
     j=$ethoffset
-
-    # internal network
-    if (( $inet == 1 ))
-    then
-      netcmd="$netcmd -net nic,vlan=2,macaddr=$SESAMACPREFIX:$n -net bridge,vlan=2,br=brI"
-    fi
-
     # external network
     if (( $xnet == 1 ))
     then
-      netcmd="$netcmd -net nic,vlan=1,macaddr=$SESAMACPREFIX:$n -net bridge,vlan=1,br=brX"
+      mac=$(SESAgenerateMac)
+      netcmd="$netcmd -net nic,vlan=1,macaddr=$mac -net bridge,vlan=1,br=brX"
+      echo "node $n: network External : eth0 : $mac"
     fi
-
+    # internal network
+    if (( $inet == 1 ))
+    then
+      mac=$(SESAgenerateMac)
+      netcmd="$netcmd -net nic,vlan=2,macaddr=$mac -net bridge,vlan=2,br=brI"
+      echo "node $n: network Internal : eth1 : $mac"
+    fi
     # private network(s)
     for p in ${pnetids//,/ }; do
-      netcmd="$netcmd -net nic,vlan=$p,model=virtio,macaddr=$SESAMACPREFIX:$n -net vde,vlan=$p,sock=$SESANETDIR/${p}/sock"
-      echo "node $n: network $p : eth${j}"
+      mac=$(SESAgenerateMac)
+      netcmd="$netcmd -net nic,vlan=$p,model=virtio,macaddr=$mac -net vde,vlan=$p,sock=$SESANETDIR/${p}/sock"
+      echo "node $n: network Private $p : eth${j} : $mac"
       (( j++ ))
     done
 
     # serial
     echo "node $n: serial: $dir/com1"
-    srlcmd="--serial unix:$dir/com1,server,nowait"
+    srlcmd="-serial unix:$dir/com1,server,nowait"
 
     # vde 
     echo "node $n: console: $dir/vnc"
-    concmd="--vnc unix:$dir/vnc -name $khuser:$conid:$n"
+    concmd="-vnc unix:$dir/vnc -name $khuser:$conid:$n"
 
-    set -x
+    # mount
+    if [[ -d $SESAMNTDIR ]]
+    then
+      mntcmd="-drive file=fat:rw:$SESAMNTDIR"
+    fi
+
     # instantiate node!
-    #echo $SESAEMUCMD $netcmd $srlcmd $concmd  -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG 
-    $SESAEMUCMD $netcmd $srlcmd $concmd  -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG >$dir/vnclog 2>&1
+    $SESAEMUCMD $netcmd $srlcmd $concmd -enable-kvm -daemonize -pidfile $dir/pid $SESA_ROM $SESA_IMG $mntcmd > $dir/vnclog 2>&1
   done
 
   return 0
@@ -691,16 +702,6 @@ KHconfigNodes()
   return 0
 }
 
-function createCon
-{
-   if [[ -n $SESA ]]; then
-      SESAcreateCon $@
-   else 
-      KHcreateCon $@
-   fi
-   return $?
-}
-
 SESAcreateCon()
 { 
   local khuser=$1
@@ -708,8 +709,6 @@ SESAcreateCon()
   local nodes="$3"
 
   local dir=$KHCONSDIR/$conid
-  local tty=$dir/tty
-  local procfile=$KHTTYPROCDIR/$conid
 
   if [[ -d $dir ]]
   then
@@ -718,8 +717,13 @@ SESAcreateCon()
   fi
   
   mkdir -p $dir
+  mkdir -p $dir/nodes
 
-  echo "$nodes" > $dir/nodes
+  for n in ${nodes[@]}; do
+    mkdir -p $dir/nodes/$n
+  done
+
+  echo "$nodes" > $dir/nodes/list
   echo "$khuser" > $dir/owner
 
   return 0
@@ -757,16 +761,6 @@ KHcreateCon()
   fi
 
   return 0
-}
-
-function createConUser
-{
-   if [[ -n $SESA ]]; then
-      SESAcreateConUser $@
-   else 
-      KHcreateConUser $@
-   fi
-   return $?
 }
 
 SESAcreateConUser()
@@ -876,11 +870,11 @@ assignNodes()
   local configdesc
   local natip
 
-  if createCon $khuser $conid "${nodes[*]}"
+  if $createCon $khuser $conid "${nodes[*]}"
   then
-    if createConUser $khuser $pnetid $conid $num "${nodes[*]}"
+    if $createConUser $khuser $pnetid $conid $num "${nodes[*]}"
     then
-       configdesc=$(configNodes $khuser $pnetid $inet $xnet $conid $num "${nodes[*]}")
+       configdesc=$($configNodes $khuser $pnetid $inet $xnet $conid $num "${nodes[*]}")
        if (( $? == 0 ))
        then
           if [[ -n $SESA ]]; then
